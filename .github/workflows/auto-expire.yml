@@ -1,0 +1,68 @@
+name: Auto Expire Shared Portfolio
+
+on:
+  schedule:
+    # Runs daily at 00:10 KST (15:10 UTC)
+    - cron: '10 15 * * *'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: '실행 모드 (expire_now: 즉시 만료 및 파일 파기 / check_expiry: 만료일 점검)'
+        required: true
+        default: 'expire_now'
+        type: choice
+        options:
+          - expire_now
+          - check_expiry
+
+permissions:
+  contents: write
+
+jobs:
+  expire-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check expiration and purge if expired
+        env:
+          MANUAL_ACTION: ${{ github.event.inputs.action || 'check_expiry' }}
+        run: |
+          python3 - <<'PY'
+          import json, os, shutil
+          from datetime import datetime, timezone, timedelta
+
+          with open("config.json", "r", encoding="utf-8") as f:
+              cfg = json.load(f)
+
+          if cfg.get("status") == "expired":
+              print("Already expired.")
+              raise SystemExit(0)
+
+          kst = timezone(timedelta(hours=9))
+          now = datetime.now(kst)
+          expires_at = datetime.fromisoformat(cfg["expires_at"])
+          manual = os.environ.get("MANUAL_ACTION", "check_expiry")
+          should_expire = (manual == "expire_now") or (now > expires_at)
+
+          if should_expire:
+              if os.path.exists("docs"):
+                  shutil.rmtree("docs")
+              shutil.copyfile("expired.template.html", "index.html")
+              cfg["status"] = "expired"
+              cfg["expired_on"] = now.isoformat()
+              with open("config.json", "w", encoding="utf-8") as f:
+                  json.dump(cfg, f, ensure_ascii=False, indent=2)
+              print("Purged docs/ and replaced index.html.")
+          PY
+
+      - name: Commit and push expiration state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -n "$(git status --porcelain)" ]; then
+            git add -A
+            git commit -m "chore: expire shared portfolio and purge documents"
+            git push
+          fi
